@@ -21,7 +21,7 @@
  * COMPILE:
  * g++ -std=c++11 -o create_monopole create_monopole.cxx
  * USAGE:
- * ./a.out <data_file> <glide plane index(1 or 2 for b1 and b2 respectively)> <disl_char=(1/0 for edge/screw)> <disl_sign=(+/-1 for +/- dislocation)>  <nx> <ny> <nz>
+ * ./a.out <data_file> <glide plane index(1 or 2 for b1 and b2 respectively)> <disl_char=(1/0 for edge/screw)> <disl_sign=(+/-1 for +/- dislocation)>  <nx> <ny> <nz> <pole=(1/0 for dipole/monopole)>
  */
 
 
@@ -118,6 +118,11 @@ std::vector<int> split_into_integers(std::string line) {
 	return vnumbers;
 }
 
+typedef struct{ 
+	int nmols,nx,ny,nz,P,dip_type,dipole;
+	double disl_char,pfrac;
+} Configuration;
+
 class CoMCell {
 		double a,b,c,xy,xz,yz;
 	public:
@@ -132,7 +137,8 @@ class CoMCell {
 		Vector fractional_to_real(double,double,double);
 		void tilt_correct();
 		void replicate_cell(double **,std::vector<double>,int,int,int,int);
-		void add_dislocation(double **,std::vector<double>,int,int,int,int,double,int,int);
+		void add_dislocation(double **,std::vector<double>,int,int,int,int,double,int,int,int);
+		void define_cores(int,double [],double [],double [],double []);
 		void move_into_box();
 		void wrap_into_box();
 
@@ -198,7 +204,7 @@ void CoMCell::replicate_cell(double **com,std::vector<double> bounds_cell,int nm
 	wrap_into_box();
 }
 
-void CoMCell::add_dislocation(double **com,std::vector<double> bounds_cell,int nmols,int nx,int ny,int nz,double disl_char, int P, int dip_type){
+void CoMCell::add_dislocation(double **com,std::vector<double> bounds_cell,int nmols,int nx,int ny,int nz,double disl_char, int P, int dip_type, int dipole){
 	
 	double pfrac = (P-1)*1.0/nmols;
 	int num_cells = nx*ny*nz;
@@ -219,24 +225,57 @@ void CoMCell::add_dislocation(double **com,std::vector<double> bounds_cell,int n
 	bounds[1] += a*(nx-1); bounds[3] += b*(ny-1); bounds[5] += c*(nz-1);
 	bounds[6] = xy*ny; bounds[7] = xz*nz; bounds[8] = yz*nz;
 	if(disl_char==1.0) bounds[1] -= 0.5*a;
+	if(dipole==1 && disl_char==1.0) bounds[1] -= 0.5*a*dip_type;
 	
 	reciprocal_vectors();
 	
-	double coreZ = (nz/2)*c + pfrac*c, coreX = a*nx*0.5+coreZ*bounds[7]/(bounds[5]-bounds[4]);
-	double coreX1 = coreX-HALF_PARTIAL_SEPARATION*a;
-	double coreX2 = coreX+HALF_PARTIAL_SEPARATION*a;
+	double coreX[2],coreZ[2],coreX1[2],coreX2[2];
+	
+	define_cores(dipole,coreX,coreZ,coreX1,coreX2);
+	
+	if(dipole==0) {
+		coreZ[0] = (nz/2)*c + pfrac*c; coreX[0] = a*nx*0.5+coreZ[0]*bounds[7]/(bounds[5]-bounds[4]);
+		coreX1[0] = coreX[0]-HALF_PARTIAL_SEPARATION*a;
+		coreX1[1] = coreX[0]+HALF_PARTIAL_SEPARATION*a;
+		std::cout << "\n Core " << coreX[0] << " " << coreZ[0] << "\n";
+	}
+	
+	if(dipole==1) {
+		double centerX = a*nx*0.5+((nz*0.5+pfrac)*c)*bounds[7]/(bounds[5]-bounds[4]);
+		if(disl_char==0.0) { // screw
+			coreZ[0] = (nz/4)*c + pfrac*c;
+			coreZ[1] = (nz*3/4)*c + pfrac*c;
+			coreX[0] = centerX;
+			coreX[1] = centerX;
+		}
+		if(disl_char==1.0) { // edge
+			coreZ[0] = (nz/4)*c + pfrac*c;
+			coreZ[1] = (nz*3/4)*c + pfrac*c;
+			coreX[0] = centerX - ((xz>=0.0)-(xz<0.0))*(coreZ[1]-coreZ[0])*0.5;;
+			coreX[1] = centerX + ((xz>=0.0)-(xz<0.0))*(coreZ[1]-coreZ[0])*0.5;;
+		}
+		
+		coreX1[0] = coreX[0]-HALF_PARTIAL_SEPARATION*a;
+		coreX1[1] = coreX[0]+HALF_PARTIAL_SEPARATION*a;
+		
+		coreX2[0] = coreX[1]-HALF_PARTIAL_SEPARATION*a;
+		coreX2[1] = coreX[1]+HALF_PARTIAL_SEPARATION*a;
+		
+		std::cout << "Core1 " << coreX[0] << " " << coreZ[0] << "\n";
+		std::cout << "Core2 " << coreX[1] << " " << coreZ[1] << "\n";
+	}
+	
 	int MAG=IMAGES;
-	std::cout << "\n Core " << coreX << " " << coreZ << "\n";
 	
 	mols = (double **)malloc(nmols*num_cells*sizeof(double *));	for(int i=0;i<nmols*num_cells;i++) mols[i] = (double *)malloc(3*sizeof(double));
-	mols0 = (double **)malloc(nmols*num_cells*sizeof(double *));	for(int i=0;i<nmols*num_cells;i++) mols0[i] = (double *)malloc(3*sizeof(double));
+	mols0 = (double **)malloc(nmols*num_cells*sizeof(double *)); for(int i=0;i<nmols*num_cells;i++) mols0[i] = (double *)malloc(3*sizeof(double));
 	int count_mols=0;
 	for(size_t i=0;i<nx;i++) {
 		for(size_t k=0;k<nz;k++) {
 			
-			int cond;
-			if(dip_type==1) cond = (k<=(nz-nz/2-1));
-			if(dip_type==-1) cond = (k>(nz-nz/2-1));
+			int cond=0;
+			if(dipole==0) cond = (k<=(nz/2-1))*(dip_type==1) + (k>(nz/2-1))*(dip_type==-1);
+			if(dipole==1) cond = (k<=(nz/4-1) || k>(nz*3/4-1) )*(dip_type==1) + (k>(nz/4-1) && k<=(nz*3/4-1) )*(dip_type==-1);
 			if((i==0)&&(cond==1)&&(disl_char==1.0)) continue;
 			
 			for(size_t j=0;j<ny;j++) {
@@ -248,43 +287,89 @@ void CoMCell::add_dislocation(double **com,std::vector<double> bounds_cell,int n
 					//apply field
 					double x,y,z;
 					double com_dx = 0,com_dy = 0,com_dz = 0;
-					for(int k2=-MAG; k2<=MAG; k2++)
-					{
-						///// 1st partial
-						z = mols[count_mols][2] - coreZ;
-						x = mols[count_mols][0] - (coreX1 + a*nx*k2 + mols[count_mols][1]*bounds[6]/(bounds[3]-bounds[2]) );
+					for(int k1=-MAG*dipole; k1<=MAG*dipole; k1++) {
+					for(int k2=-MAG; k2<=MAG; k2++)	{
+						//DISLOCATION 1
 						
-						double bmag = sqrt(b*b+xy*xy);
-						double burger = 0.5*dip_type*bmag*(1.0-disl_char) + 0.5*dip_type*a*disl_char;
-						double lam = (1-v)*(x*x + z*z);
+							///// 1st partial
+							z = mols[count_mols][2] - (coreZ[0] + c*nz*k1);
+							x = mols[count_mols][0] - (coreX1[0] + a*nx*k2 + xz*nz*k1 + mols[count_mols][1]*bounds[6]/(bounds[3]-bounds[2]) );
+							
+							double bmag = sqrt(b*b+xy*xy);
+							double burger = 0.5*dip_type*bmag*(1.0-disl_char) + 0.5*dip_type*a*disl_char;
+							double lam = (1-v)*(x*x + z*z);
+							
+							//std::cout << "\n Burgers " << burger << "\n";
+							com_dy += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*b/bmag;
+							com_dz += 0.0;
+							com_dx += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*xy/bmag;
+							
+							com_dz += disl_char*(-burger/(2*PI))*( ((1-2*v)/(4*(1-v)))*log(x*x + z*z) + ((x*x-z*z)/(4*lam)) );
+							com_dy += 0.0;
+							com_dx += disl_char*(burger/(2*PI))*( atan2(z,x) + (x*z/(2*lam)) );
+							
+							///// 2nd partial
+							x = mols[count_mols][0] - (coreX1[1] + a*nx*k2 + xz*nz*k1 + mols[count_mols][1]*bounds[6]/(bounds[3]-bounds[2]) );
+							lam = (1-v)*(x*x + z*z);
+							com_dy += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*b/bmag;
+							com_dz += 0.0;
+							com_dx += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*xy/bmag;
+							
+							com_dz += disl_char*(-burger/(2*PI))*( ((1-2*v)/(4*(1-v)))*log(x*x + z*z) + ((x*x-z*z)/(4*lam)) );
+							com_dy += 0.0;
+							com_dx += disl_char*(burger/(2*PI))*( atan2(z,x) + (x*z/(2*lam)) );
 						
-						//std::cout << "\n Burgers " << burger << "\n";
-						com_dy += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*b/bmag;
-						com_dz += 0.0;
-						com_dx += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*xy/bmag;
 						
-						com_dz += disl_char*(-burger/(2*PI))*( ((1-2*v)/(4*(1-v)))*log(x*x + z*z) + ((x*x-z*z)/(4*lam)) );
-						com_dy += 0.0;
-						com_dx += disl_char*(burger/(2*PI))*( atan2(z,x) + (x*z/(2*lam)) );
-						
-						///// 2nd partial
-						x = mols[count_mols][0] - (coreX2 + a*nx*k2 + mols[count_mols][1]*bounds[6]/(bounds[3]-bounds[2]) );
-						lam = (1-v)*(x*x + z*z);
-						com_dy += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*b/bmag;
-						com_dz += 0.0;
-						com_dx += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*xy/bmag;
-						
-						com_dz += disl_char*(-burger/(2*PI))*( ((1-2*v)/(4*(1-v)))*log(x*x + z*z) + ((x*x-z*z)/(4*lam)) );
-						com_dy += 0.0;
-						com_dx += disl_char*(burger/(2*PI))*( atan2(z,x) + (x*z/(2*lam)) );
+						if(dipole==1) //DISLOCATION 2 if dipole
+						{
+							///// 1st partial
+							z = mols[count_mols][2] - (coreZ[1] + c*nz*k1);
+							x = mols[count_mols][0] - (coreX2[0] + a*nx*k2 + xz*nz*k1 + mols[count_mols][1]*bounds[6]/(bounds[3]-bounds[2]) );
+							
+							double bmag = sqrt(b*b+xy*xy);
+							double burger = -0.5*dip_type*bmag*(1.0-disl_char) - 0.5*dip_type*a*disl_char;
+							double lam = (1-v)*(x*x + z*z);
+							
+							//std::cout << "\n Burgers " << burger << "\n";
+							com_dy += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*b/bmag;
+							com_dz += 0.0;
+							com_dx += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*xy/bmag;
+							
+							com_dz += disl_char*(-burger/(2*PI))*( ((1-2*v)/(4*(1-v)))*log(x*x + z*z) + ((x*x-z*z)/(4*lam)) );
+							com_dy += 0.0;
+							com_dx += disl_char*(burger/(2*PI))*( atan2(z,x) + (x*z/(2*lam)) );
+							
+							///// 2nd partial
+							x = mols[count_mols][0] - (coreX2[1] + a*nx*k2 + xz*nz*k1 + mols[count_mols][1]*bounds[6]/(bounds[3]-bounds[2]) );
+							lam = (1-v)*(x*x + z*z);
+							com_dy += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*b/bmag;
+							com_dz += 0.0;
+							com_dx += (1.0-disl_char)*(burger/(2*PI))*atan2(z,x)*xy/bmag;
+							
+							com_dz += disl_char*(-burger/(2*PI))*( ((1-2*v)/(4*(1-v)))*log(x*x + z*z) + ((x*x-z*z)/(4*lam)) );
+							com_dy += 0.0;
+							com_dx += disl_char*(burger/(2*PI))*( atan2(z,x) + (x*z/(2*lam)) );
+						}
+					
+					}
+					}
+				
+					if(dipole==0) {
+						com_dy -= 0.5*MAG*b*sgn(com_dy)*(1.0-disl_char);
+						com_dx -= 0.5*MAG*xy*sgn(com_dy)*(1.0-disl_char);
+						if((mols[count_mols][2]>coreZ[0])) com_dx -= MAG*a*dip_type*disl_char;
 					}
 					
-					com_dy -= 0.5*MAG*b*dip_type*sgn(com_dy)*(1.0-disl_char);
-					com_dx -= 0.5*MAG*xy*dip_type*sgn(com_dy)*(1.0-disl_char);
-					if((mols[count_mols][2]>coreZ)) com_dx -= MAG*a*dip_type*disl_char;
+					if(dipole==1) {
+						if((mols[count_mols][2]<coreZ[1])&&(mols[count_mols][2]>coreZ[0])) {
+							com_dy -= 1.0*MAG*b*dip_type*(1.0-disl_char);
+							com_dx -= 1.0*MAG*xy*dip_type*(1.0-disl_char);
+							com_dx -= 1.0*MAG*a*dip_type*disl_char;
+						}
+					}
 					
 					mols[count_mols][0] += com_dx; mols[count_mols][1] += com_dy; mols[count_mols][2] += com_dz;
-					Vector disp = {com_dx,com_dy,com_dz}; //printVector(disp);
+					Vector disp = {com_dx,com_dy,com_dz}; printVector(disp);
 					count_mols++;
 				}
 			}
@@ -293,10 +378,15 @@ void CoMCell::add_dislocation(double **com,std::vector<double> bounds_cell,int n
 	num_mols = count_mols;
 	//std::cout << std::endl;
 	
+	for(int i=0;i<3; i++) for(int k=0;k<3;k++) Rotation[i][k] = (i==k);
 	move_into_box();
 	tilt_correct();
 	
-	bounds[5] += VACUUM*0.5; bounds[4] -= VACUUM*0.5; // add vacuum padding for monopoles
+	if(dipole==0) {bounds[5] += VACUUM*0.5; bounds[4] -= VACUUM*0.5;} // add vacuum padding for monopoles
+}
+
+void CoMCell::define_cores(int dipole,double coreX[],double coreZ[],double coreX1[],double coreX2[]) {
+	
 }
 
 void CoMCell::wrap_into_box() {
@@ -367,6 +457,9 @@ void CoMCell::move_into_box() {
 	
 	for(int i=0;i<3; i++) for(int k=0;k<3;k++) 
 		Rotation[i][k] = Rx[i][0]*R[0][k] + Rx[i][1]*R[1][k] + Rx[i][2]*R[2][k];
+	
+	printf("Rotation matrix :\n");
+	for(int i=0;i<3; i++) {for(int k=0;k<3;k++) printf(" %lf", Rotation[i][k]); printf("\n");}
 	
 	//printf("theta %lf thetaX %lf\n",theta*180/PI, thetaX*180/PI);
 	
@@ -617,18 +710,19 @@ int main(int argc, char **argv)
 	
 	int nx=20, ny=1, nz=40;
 	int num_cells = nx*ny*nz;
-	int P = 1; double disl_char = 0.0; int dip_type = 1;
+	int P = 1; double disl_char = 0.0; int dip_type = 1; int dipole = 0;
 	
-	if(argc==8) {
+	if(argc==9) {
 		P = atoi(argv[2]);
 		disl_char = atof(argv[3]);
 		dip_type = atoi(argv[4]);
 		nx = atoi(argv[5]);
 		ny = atoi(argv[6]);
 		nz = atoi(argv[7]);
+		dipole = atoi(argv[8]);;
 	}
 	//cell_mols.replicate_cell(cell.com,cell.bounds,cell.num_mols,nx,ny,nz);
-	cell_mols.add_dislocation(cell.com,cell.bounds,cell.num_mols,nx,ny,nz,disl_char,P,dip_type);
+	cell_mols.add_dislocation(cell.com,cell.bounds,cell.num_mols,nx,ny,nz,disl_char,P,dip_type,dipole);
 	num_cells = cell_mols.num_mols/2;
 	
 	char outfile[]="output.lmp"; char intro[100];
